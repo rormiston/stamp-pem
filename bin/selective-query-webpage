@@ -1,0 +1,244 @@
+#!/usr/bin/python
+import os
+import sys
+import subprocess as sp
+from stamp_pem import coh_io
+from collections import OrderedDict
+from stamp_pem.coherence_segment import ChannelDict, PEMSubsystem
+from gwpy.segments import DataQualityFlag
+from gwpy.time import tconvert
+import fnmatch
+import numpy as np
+from jinja2 import Environment, PackageLoader
+from stamp_pem.utils import cohe_color, get_excluded
+import stamp_pem.selectivequery as sq
+from stamp_pem.make_large_coherence_matrix import (chandict_to_ordered_dict,
+                                                   plot_coh_matrix)
+
+env = Environment(loader=PackageLoader('stamp_pem', 'templates'))
+env.globals['cohe_color'] = cohe_color
+excluded = get_excluded()
+print('Building webpage...')
+
+# Collect parameters
+params = sq.parse_command_line()
+configs = sq.parse_cmd_and_configs(params)
+st, et = configs['st'], configs['et'] 
+output_dir, basedir = configs['output_dir'], configs['basedir']
+flag, jobdur, inc = configs['flag'], configs['jobdur'], configs['inc']
+darm_channel = configs['darm_channel']
+ifo = darm_channel[:2]
+stride = configs['stride']
+subsystem_list = configs['subsystem_list']
+channel_dict = ChannelDict.read(configs['channel_list'])
+channel_dict = chandict_to_ordered_dict(channel_dict)
+flow, fhigh = configs['flow'], configs['fhigh']
+new_df = configs['new_df']
+plotSNR = configs['plotSNR']
+segmentDuration = configs['segmentDuration']
+
+# Adjust the query window to the nearest 1800s
+adj_time = sq.adjusted_window(st, et, jobdur)
+st, et = adj_time[0], adj_time[-1]
+
+# Get stuff we need for webpage
+webpage_info = sq.webpage_info(st, et, output_dir, jobdur)
+datestrmdy = webpage_info['mdy']
+datestrdmy = webpage_info['dmy']
+datestrymd = webpage_info['ymd']
+webpage_output_dir = webpage_info['output_dir']
+
+# We only want to loop over the given subsystems, but we still
+# need the channel info.
+c_dict = {}
+for subsystem in subsystem_list:
+    if subsystem in channel_dict.keys():
+        c_dict[subsystem] = channel_dict[subsystem]
+c_dict = chandict_to_ordered_dict(c_dict)
+channel_dict = c_dict
+
+# Needed for labeling coherence matrix
+nchans_per_subsystem = OrderedDict()
+for key in channel_dict.keys():
+    nchans_per_subsystem[key[:-2]] = 0
+nchans = np.sum(np.asarray([len(channel_dict[key])
+                            for key in channel_dict.keys()]))
+
+# Number of averages (most number of averages...needed for plotting)
+Navg = 1
+chans = []
+for key in channel_dict.keys():
+    for chan in channel_dict[key]:
+        chans.append(chan)
+
+subsystems = []
+plots = {}
+count = 0
+nexcluded = 0
+First = True
+for ii, key in enumerate(channel_dict.keys()):
+    print('Loading data for {0}...'.format(key))
+    subsystems.append(key[:-2])
+    # For loading data
+    cohdir = coh_io.get_directory_structure(key, st, '../../../')
+    cohfile = coh_io.create_coherence_data_filename(darm_channel, key, st, et,
+                                                    directory=cohdir)
+    plots[key] = '%s.png' % cohfile
+    cohdir2 = coh_io.get_directory_structure(key, st, basedir)
+    cohfile2 = coh_io.create_coherence_data_filename(darm_channel, key, st, et,
+                                                     directory=cohdir2)
+    # For labeling coherence matrix
+    nchans_per_subsystem[key[:-2]] += len(channel_dict[key])
+
+    try:
+        try:
+            # Load data
+            subsys = PEMSubsystem.read(key, cohfile2)
+            if flow is not None:
+                flowy = flow
+            else:
+                flowy = new_df
+            subsys.coarse_grain(flowy=flowy, deltaFy=new_df)
+        except KeyError:
+            # print('KeyError: {0} loading...'.format(key))
+            # Be sure to increment our count...
+            count += len(channel_dict[key])
+            continue
+    except IOError:
+        # print('IOError: {0} loading...'.format(key))
+        # print('Tried to load: {0}'.format(cohfile2))
+        # Be sure to increment the count
+        count += len(channel_dict[key])
+        continue
+
+    for jj, key2 in enumerate(subsys.keys()):
+        cont = False
+        if First:
+            # Initialize matrix
+            coh_tab = np.zeros((nchans, subsys[key2].psd1.size))
+            coh_tab_plot = np.zeros((nchans, subsys[key2].psd1.size))
+            freqs = subsys[key2].psd1.frequencies.value
+            First = False
+        nfreqs_chan = subsys[key2].psd2.size
+
+        # We want to plot everything...don't excude
+        # anything...and let's plot coherence SNR
+        coh_tab_plot[count, :nfreqs_chan] = subsys[key2].get_coh() * subsys[key2].N
+        if subsys[key2].N > Navg:
+            Navg = subsys[key2].N
+
+        # Keep excluded channels out of matrix
+        for ex in excluded:
+            if fnmatch.fnmatch(key2, ifo + ':' + ex):
+                coh_tab[count, :nfreqs_chan] = np.zeros(nfreqs_chan)
+                nexcluded += 1
+                count += 1
+                cont = True
+
+        if cont:
+            continue
+        else:
+            coh_tab[count, :nfreqs_chan] = subsys[key2].get_coh()
+            count += 1
+
+chans_to_keep = min(20, nchans - nexcluded)  # Only keep top 20 channels
+chanmatrix = []
+cut_coh_tab = np.zeros((freqs.size, chans_to_keep))
+arg1 = []
+coh_tab[np.isnan(coh_tab)] = 0
+
+for ii in range(freqs.size):
+    args = np.asarray(np.argsort(coh_tab[:, ii]))[::-1]
+    argchans = [chans[kk] for kk in args[:chans_to_keep]]
+    chanmatrix.append([chan for chan in argchans])
+    cut_coh_tab[ii, :] = coh_tab[args[:chans_to_keep], ii]
+
+print('Done with coherence table.')
+print('Writing webpages...')
+
+proxyCheck = sp.Popen(['grid-proxy-info'], stdout=sp.PIPE).communicate()[0]
+if proxyCheck:
+    segs = DataQualityFlag.query(flag, st, et)
+    segs = segs.active
+else:
+    print('\nCannot query segment database without a valid proxy. Most likely,')
+    print('you need to run: ligo-proxy-init albert.einstein')
+    sys.exit()
+
+subsystems = np.unique(subsystems)
+subplots = {}
+# Get rid of 5 different "subsystems" that were broken up for condor workflow
+for subsystem in subsystems:
+    subplots[subsystem] = []
+    for key in plots.keys():
+        if key[:-2] == subsystem:
+            subplots[subsystem].append(plots[key])
+
+# Make the subsystem names on the webpage more reader friendly
+newsubs = [sub.replace(':', '') for sub in subsystems]
+d3names = []
+for sub in subsystems:
+    subwords = sub.strip().split(' ')
+    sub = ' '.join([word for word in subwords if len(word) > 2])
+    d3names.append(sub)
+d3names = list(sorted(set(d3names)))
+d3links = [n.replace(':', '').replace(' ', '_') for n in d3names]
+resids = d3names
+residslinks = d3links
+
+# Make the webpages
+# Top page
+os.system('mkdir -p %s' % (webpage_output_dir))
+f1 = open(('%s/index.html' % webpage_output_dir), 'w')
+template = env.get_template('sq_top_page.html')
+print >>f1, template.render(subsystems=newsubs, datestrdmy=datestrdmy,
+                            segments=segs, flag=flag, datestrmdy=datestrmdy,
+                            datestrymd=datestrymd, d3names=d3names,
+                            d3links=d3links, resids=resids,
+                            residslinks=residslinks,
+                            segmentDuration=segmentDuration,
+                            df=new_df)
+f1.close()
+
+# Subsystems
+for i in range(len(subsystems)):
+    template = env.get_template('sq_subsys2.html')
+    f2 = open(('%s/%s.html' % (webpage_output_dir, newsubs[i])), 'w')
+    print >> f2, template.render(plots=subplots[subsystems[i]],
+                                 subsystems=newsubs,
+                                 thissubsystem=subsystems[i],
+                                 datestrdmy=datestrdmy,
+                                 datestrmdy=datestrmdy,
+                                 datestrymd=datestrymd, d3links=d3links,
+                                 d3names=d3names, resids=resids,
+                                 residslinks=residslinks)
+    f2.close()
+
+# Bruco table
+if flow is not None:
+    template = env.get_template('narrow_frequency_band.html')
+else:
+    template = env.get_template('sq_bruco_table_daily.html')
+f3 = open('%s/bruco_table.html' % (webpage_output_dir), 'w')
+print >> f3, template.render(subsystems=newsubs, chanmatrix=chanmatrix,
+                             cut_coh_tab=cut_coh_tab, nfreqs=freqs.size,
+                             nchans=chans_to_keep, freqs=freqs,
+                             datestrdmy=datestrdmy, datestrmdy=datestrmdy,
+                             datestrymd=datestrymd, d3links=d3links,
+                             d3names=d3names, resids=resids,
+                             residslinks=residslinks)
+f3.close()
+
+# Detchar summary page
+template = env.get_template('detchar_summary_template.html')
+f4 = open('%s/detchar_summary.html' % (webpage_output_dir), 'w')
+print >>f4, template.render(flag=flag, segments=segs, chanmatrix=chanmatrix,
+                            cut_coh_tab=cut_coh_tab, nfreqs=freqs.size,
+                            nchans=min(chans_to_keep, 5), freqs=freqs,
+                            approx_time=(Navg * stride/2.),
+                            last_time_analyzed=tconvert(et))
+f4.close()
+
+# NOTE: D3 Plots are built within their own script (d3plots)
+plot_coh_matrix(coh_tab_plot, freqs, nchans_per_subsystem, webpage_output_dir,
+                N=Navg, datestr=datestrdmy, new_df=new_df, plotSNR=plotSNR)

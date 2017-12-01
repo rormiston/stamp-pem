@@ -1,0 +1,68 @@
+<!DOCTYPE HTML PUBLIC '-//W3C//DTD HTML 4.01 Transitional//EN'>
+<html lang="en">
+<head>
+<meta content="width=device-width, initial-scale=1.0" name="viewport" />
+<base href="" />
+<link media="all" href="//netdna.bootstrapcdn.com/bootstrap/3.3.6/css/bootstrap.min.css" type="text/css" rel="stylesheet" />
+<link media="all" href="//cdnjs.cloudflare.com/ajax/libs/fancybox/2.1.5/jquery.fancybox.css" type="text/css" rel="stylesheet" />
+<link media="all" href="//cdnjs.cloudflare.com/ajax/libs/bootstrap-datepicker/1.6.0/css/bootstrap-datepicker.min.css" type="text/css" rel="stylesheet" />
+<title>STAMP-PEM Quick Run</title>
+<script src="//code.jquery.com/jquery-1.12.3.min.js" type="text/javascript"></script>
+<script src="//cdnjs.cloudflare.com/ajax/libs/moment.js/2.13.0/moment.min.js" type="text/javascript"></script>
+<script src="//netdna.bootstrapcdn.com/bootstrap/3.3.6/js/bootstrap.min.js" type="text/javascript"></script>
+<script src="//cdnjs.cloudflare.com/ajax/libs/fancybox/2.1.5/jquery.fancybox.pack.js" type="text/javascript"></script>
+<script src="//cdnjs.cloudflare.com/ajax/libs/bootstrap-datepicker/1.6.0/js/bootstrap-datepicker.min.js" type="text/javascript"></script>
+<script src="/~detchar/summary/static/bootstrap-ligo.min.js" type="text/javascript"></script>
+<script src="/~detchar/summary/static/gwsumm.min.js" type="text/javascript"></script>
+
+
+</head>
+<body>
+  
+  <header class="navbar navbar-fixed-top navbar-all" role="banner">
+    <div class="container">
+      <button class="navbar-toggle" data-toggle="collapse" type="button" data-target=".navbar-collapse">
+        <span class="icon-bar"></span>
+        <span class="icon-bar"></span>
+        <span class="icon-bar"></span>
+      </button>
+        <!-- Collect the nav links, forms, and other content for toggling -->
+        <a class="navbar-brand step-back" onclick="stepDate(-1)" title="Step back">&laquo;</a>
+        <a class="navbar-brand step-forward" onclick="stepDate(1)" title="Step forwards">&raquo;</a>
+        <nav class="collapse navbar-collapse" role="navigation">
+          <ul class="nav navbar-nav">
+            <li>
+                <a href="index.html">Summary</a>
+            </li>
+            <li class="dropdown">
+              <a href="#" class="dropdown-toggle" data-toggle="dropdown" role="button" aria-haspopup="true" aria-expanded="false">Subsystems <span class="caret"></span></a>
+              <ul class="dropdown-menu">
+                <li><a href="bruco_table.html">Bruco Table </a></li>
+              {% for subsystem in subsystems %}
+                <li><a href="{{subsystem}}.html">{{subsystem}}</a></li>
+              {% endfor %}
+              </ul>
+            </li>
+          </ul>
+        </nav>
+    </div>
+  </header>
+    <div class="container">
+    <table class="table table-striped">
+            <tr>
+                    <th> Frequency </th>
+                    {%for ii in range(nchans)%}
+                    <th> {{ii+1}} most coherent </th>
+                    {% endfor %}
+            </tr>
+            {%for ii in range(nfreqs)%}
+            <tr>
+                    <td> {{freqs[ii]}}</td>
+                    {%for jj in range(nchans)%}
+                    <td bgcolor={{cohe_color(cut_coh_tab[ii,jj])}}>{{chanmatrix[ii][jj]}}: {{(cut_coh_tab[ii,jj] * 100000 // 1)  / 100000}}</td>
+                    {% endfor %}
+            </tr>
+            {% endfor %}
+    </table>
+    </div>
+</body>

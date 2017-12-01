@@ -1,0 +1,46 @@
+#!/usr/bin/python
+import os
+import sys
+import stamp_pem.selectivequery as sq
+
+
+# Welcome to stamp-pem!
+sq.logo()
+
+# Collect params
+params = sq.parse_command_line()
+subsystems = sq.cmd_to_string(params.subsystems)
+frequency_band = sq.cmd_to_string(params.frequency_band)
+output_dir = params.output_dir
+new_df = params.new_df
+
+# Combine coherence for the given subsystems and during the given times
+combine_cmd = ("selective-query-combine-coherence -i %s -s %d -e %d "
+               "--subsystems %s -f %s -o %s --new-df %f" % (params.ini,
+               params.st, params.et, subsystems, frequency_band, output_dir,
+               new_df))
+
+webpage_cmd = ("selective-query-webpage -i %s -s %d -e %d --subsystems %s "
+               "--new-df %f -f %s -o %s --new-df %f" % (params.ini, params.st,
+               params.et, subsystems, params.new_df, frequency_band, output_dir,
+               new_df))
+
+
+d3plot_cmd = ("selective-query-d3plots -i %s -st %d -et %d --subsystems %s "
+              "-f %s -o %s --new-df %f" % (params.ini, params.st, params.et,
+              subsystems, frequency_band, output_dir, new_df))
+
+residual_cmd = ("selective-query-residuals -i %s -st %d -et %d --subsystems %s "
+                "-f %s -o %s --new-df %f" % (params.ini, params.st, params.et,
+                subsystems, frequency_band, output_dir, new_df))
+
+# Run the commands
+combine = os.system(combine_cmd)
+
+if combine != 0:
+    sys.exit(1)
+
+os.system(webpage_cmd)
+os.system(d3plot_cmd)
+os.system(residual_cmd)
+print('Done')

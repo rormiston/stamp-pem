@@ -1,0 +1,210 @@
+#!/usr/bin/python
+import os
+from stamp_pem import coh_io
+import optparse
+from collections import OrderedDict
+from stamp_pem.coherence_segment import ChannelDict,PEMSubsystem
+from gwpy.segments import DataQualityFlag
+from gwpy.time import tconvert
+import fnmatch
+from datetime import datetime
+import numpy as np
+from jinja2 import Environment, PackageLoader
+from stamp_pem.utils import cohe_color, get_excluded
+from stamp_pem.make_large_coherence_matrix import (plot_coh_matrix,
+                                                   chandict_to_ordered_dict)
+
+
+env = Environment(loader=PackageLoader('stamp_pem', 'templates'))
+env.globals['cohe_color'] = cohe_color
+excluded = get_excluded()
+
+
+def parse_command_line():
+    """
+    parse command parse command line
+    """
+    parser = optparse.OptionParser()
+    parser.add_option(
+        "--ini-file", "-i", help="pipeline ini file",
+        default=None, type=str, dest='ini')
+    parser.add_option(
+        "--new-df", help="pipeline ini file",
+        default=0.5, type=float, dest='new_df')
+    params, args = parser.parse_args()
+    return params
+
+# set up some params 
+params = parse_command_line()
+pipeline_dict = coh_io.read_pipeline_ini(params.ini)
+env_params, run_params = coh_io.check_ini_params(pipeline_dict)
+channel_dict = ChannelDict.read(env_params['list'])
+channel_dict = chandict_to_ordered_dict(channel_dict)
+time_file = env_params['online_time_file']
+inc = int(env_params['online_increment'])
+jobdur = int(env_params['job_duration'])
+darm_channel = run_params['darm_channel']
+ifo = darm_channel[:2]
+basedir = env_params['base_directory']
+flag = run_params['flag']
+stride = int(run_params['stride'])
+st = coh_io.read_time_from_file(time_file)
+et = st + inc
+
+# get stuff we need for webpage
+starttime = tconvert(st)
+daystart = tconvert(datetime(starttime.year, starttime.month, starttime.day))
+save_webpage_str = '%d%02d%02d' % (starttime.year, starttime.month, starttime.day)
+datestrmdy = '%02d-%02d-%d' % (starttime.month, starttime.day, starttime.year)
+datestrdmy = '%02d-%02d-%d' % (starttime.day, starttime.month, starttime.year)
+datestrymd = '%d%02d%02d' % (starttime.year, starttime.month, starttime.day)
+webpage_basedir = '%s/%s/day/%s' % (basedir, 'HTML',save_webpage_str)
+plots = {}
+subsystems = []
+# needed for labeling coherence matrix
+nchans_per_subsystem = OrderedDict()
+for key in channel_dict.keys():
+    nchans_per_subsystem[key[:-2]] = 0
+
+nchans = np.sum(np.asarray([len(channel_dict[key]) for key in channel_dict.keys()]))
+First = True
+count = 0
+nexcluded = 0
+chans = []
+# number of averages (most number of averages...for plotting)
+Navg = 0
+path = str(basedir) + '/FailedJobs/'
+if not os.path.exists(path):
+    os.system('mkdir -p {0}'.format(path))
+os.system('touch {0}FailedJobsReport_MOWP.txt'.format(path))
+f = open(str(basedir) + '/FailedJobs/FailedJobsReport_MOWP.txt', 'a')
+for key in channel_dict.keys():
+    for chan in channel_dict[key]:
+        chans.append(chan)
+for ii,key in enumerate(channel_dict.keys()):
+    print 'Loading data for %s...' % key
+    subsystems.append(key[:-2])
+    # for loading data
+    cohdir = coh_io.get_directory_structure(key, daystart, '../../../')
+    cohfile = coh_io.create_coherence_data_filename(darm_channel, key, daystart, daystart + 86400,
+        directory=cohdir)
+    plots[key] = '%s.png' % cohfile
+
+    cohdir2 = coh_io.get_directory_structure(key, daystart, basedir)
+    cohfile2 = coh_io.create_coherence_data_filename(darm_channel, key, daystart, daystart + 86400,
+                    directory=cohdir2)
+    # for labeling coherence matrix
+    nchans_per_subsystem[key[:-2]] += len(channel_dict[key])
+    # I couldn't get `except this or that:` to work...
+    # so I've nested them. It's super ugly. 
+    try:
+        try:
+            # load data
+            subsys = PEMSubsystem.read(key, cohfile2)
+            subsys.coarse_grain(flowy=params.new_df, deltaFy=params.new_df)
+        except KeyError:
+            error = 'KeyError: %s loading...\n' % key
+            f.write(error)
+            # be sure to increment our count...
+            count += len(channel_dict[key])
+            continue
+    except IOError:
+        error = 'IOError: %s\n' % cohfile2
+        f.write(error)
+        # be sure to increment the count
+        count += len(channel_dict[key])
+        continue
+    for jj, key2 in enumerate(subsys.keys()):
+        cont = False
+        if First:
+            N_avgs = subsys[key2].N
+            # initialize matrix
+            coh_tab = np.zeros((nchans, subsys[key2].psd1.size))
+            coh_tab_plot = np.zeros((nchans, subsys[key2].psd1.size))
+            freqs = subsys[key2].psd1.frequencies.value
+            First = False
+        nfreqs_chan = subsys[key2].psd2.size
+        # we want to plot everything...don't excude
+        # anything...and let's plot coherence SNR
+        coh_tab_plot[count, :nfreqs_chan] = subsys[key2].get_coh() * subsys[key2].N
+        if subsys[key2].N > Navg:
+            Navg = subsys[key2].N
+
+        # keep excluded channels out of matrix
+        for ex in excluded:
+            if fnmatch.fnmatch(key2,ifo+':'+ex):
+                coh_tab[count,:nfreqs_chan] = np.zeros(nfreqs_chan)
+                nexcluded += 1
+                count += 1
+                cont=True
+        if cont:
+            continue
+        else:
+            coh_tab[count,:nfreqs_chan] = subsys[key2].get_coh()
+            count += 1
+
+f.write('\n\n')
+f.close()
+print 'Done creating coherence table...sorting it now...'
+chans_to_keep = min(20, nchans - nexcluded)
+# only keep top 20 channels
+chanmatrix = []
+cut_coh_tab = np.zeros((freqs.size, chans_to_keep))
+arg1 = []
+coh_tab[np.isnan(coh_tab)] = 0
+for ii in range(freqs.size):
+    args = np.asarray(np.argsort(coh_tab[:,ii]))[::-1]
+    argchans = [chans[kk] for kk in args[:chans_to_keep]]
+    chanmatrix.append([chan for chan in argchans])
+    cut_coh_tab[ii,:] = coh_tab[args[:chans_to_keep],ii]
+print 'Done with coherence table...rendering it now...\n'
+
+
+segs = DataQualityFlag.query_dqsegdb(flag, daystart, daystart+86400)
+segs = segs.active
+
+
+subsystems = np.unique(subsystems)
+subplots = {}
+# get rid of 5 different "subsystems" that were
+# broken up for condor workflow
+for subsystem in subsystems:
+    subplots[subsystem] = []
+    for key in plots.keys():
+        if key[:-2] == subsystem:
+            subplots[subsystem].append(plots[key])
+
+newsubs = []
+for sub in subsystems:
+    sub = sub.replace(':', '')
+    newsubs.append(sub)
+
+# make directory
+os.system('mkdir -p %s' % (webpage_basedir))
+f1 = open(('%s/index.html' % webpage_basedir),'w')
+template = env.get_template('top_page.html')
+print >>f1, template.render(subsystems=newsubs, datestrdmy=datestrdmy, segments=segs, flag=flag, datestrmdy=datestrmdy, datestrymd=datestrymd, last_time_analyzed=tconvert(et))
+f1.close()
+
+for i in range(len(subsystems)):
+    template = env.get_template('subsys2.html')
+    f2 = open(('%s/%s.html' % (webpage_basedir, newsubs[i])),'w')
+    print >>f2, template.render(plots = subplots[subsystems[i]],
+                                subsystems=newsubs,
+                                thissubsystem=subsystems[i],
+                                datestrdmy=datestrdmy,
+                                datestrmdy=datestrmdy,
+                                datestrymd=datestrymd)
+    f2.close()
+
+template = env.get_template('bruco_table_daily.html')
+f3 = open('%s/bruco_table.html' % (webpage_basedir),'w')
+print >>f3, template.render(subsystems=subsystems, chanmatrix=chanmatrix, cut_coh_tab=cut_coh_tab, nfreqs=freqs.size, nchans=chans_to_keep, freqs=freqs,datestrdmy=datestrdmy, datestrmdy=datestrmdy, datestrymd=datestrymd)
+f3.close()
+
+template = env.get_template('detchar_summary_template.html')
+f4 = open('%s/detchar_summary.html' % (webpage_basedir), 'w')
+print >>f4, template.render(flag=flag, segments=segs, chanmatrix=chanmatrix, cut_coh_tab=cut_coh_tab, nfreqs=freqs.size, nchans=min(chans_to_keep, 5), freqs=freqs, approx_time=(N_avgs * stride/2.), last_time_analyzed=tconvert(et))
+f4.close()
+# plot large coherence matrix
+plot_coh_matrix(coh_tab_plot, freqs, nchans_per_subsystem, webpage_basedir, N=Navg, datestr=datestrdmy)

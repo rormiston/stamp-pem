@@ -1,0 +1,98 @@
+#!/usr/bin/python
+import os
+from stamp_pem import coh_io
+from stamp_pem.coherence_segment import ChannelDict, PEMSubsystem
+from gwpy.time import tconvert
+from datetime import datetime
+import numpy as np
+import optparse
+
+
+def parse_command_line():
+    """
+    parse command parse command line
+    """
+    parser = optparse.OptionParser()
+    parser.add_option(
+        "--ini-file", "-i", help="pipeline ini file",
+        default=None, type=str, dest='ini')
+    parser.add_option(
+        "-s", "--start-time", help="start time for combining",
+        default=None, type=int, dest='st')
+    parser.add_option(
+        "-e", "--end-time", help="end time for combining",
+        default=None, type=int, dest='et')
+    parser.add_option(
+        "-o", "--output-directory", help="output directory",
+        default="./", type=str, dest="odir")
+    parser.add_option(
+        "--new-df",help="frequency to coarsegrain to for bruco-like table",
+        default=1, dest="new_df")
+
+    params, args = parser.parse_args()
+
+
+    return params
+
+# set up some params
+params = parse_command_line()
+pipeline_dict = coh_io.read_pipeline_ini(params.ini)
+env_params, run_params = coh_io.check_ini_params(pipeline_dict)
+channel_dict = ChannelDict.read(env_params['list'])
+time_file = env_params['online_time_file']
+inc = int(env_params['online_increment'])
+jobdur = int(env_params['job_duration'])
+darm_channel = run_params['darm_channel']
+basedir = env_params['base_directory']
+flag = run_params['flag']
+st = coh_io.read_time_from_file(time_file)
+et = st + inc
+
+# combine coherence for full day so far unless it's the first
+# time we're running today
+nchans = 0
+for key in channel_dict.keys():
+    combine_cmd = "quick-combine-coherence --darm-channel %s -s %d -e %d --subsystem '%s' --directory %s --increment %d --jobdur %d --output-directory %s" % (
+    darm_channel, params.st, params.et, key, basedir, params.et - params.st, jobdur, params.odir)
+#    os.system(combine_cmd)
+    nchans += len(channel_dict[key])
+
+First = True
+chans = []
+for ii, key in enumerate(channel_dict.keys()):
+    if ii > 20:
+        continue
+    cohfile = coh_io.create_coherence_data_filename(darm_channel, key, params.st, params.et, directory=params.odir)
+    try:
+        try:
+            subsys = PEMSubsystem.read(key, cohfile)
+        except KeyError:
+            continue
+    except IOError:
+        continue
+
+    subsys.coarse_grain(deltaFy=params.new_df)
+
+    for jj,key2 in enumerate(subsys.keys()):
+        if First:
+            coh_tab = np.zeros((nchans, subsys[key2].psd1.size))
+            freqs = subsys[key2].psd1.frequencies.value
+            First = False
+        nfreqs_chan = subsys[key2].psd2.size
+        coh_tab[ii+jj,:nfreqs_chan] = subsys[key2].get_coh()
+        chans.append(key2)
+print 'Done creating coherence table...sorting it now...'
+
+# only keep top 20 channels
+chanmatrix = []
+cut_coh_tab = np.zeros((freqs.size, 20))
+for ii in range(freqs.size):
+    args = np.asarray(np.argsort(coh_tab[:,ii]))[::-1]
+    argchans = [chans[kk] for kk in args[:20]]
+    chanmatrix.append([chan for chan in argchans])
+    cut_coh_tab[ii,:] = coh_tab[args[:20],ii]
+
+print chanmatrix[0]
+print cut_coh_tab[0,:]
+
+

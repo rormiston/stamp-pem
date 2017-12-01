@@ -1,0 +1,24 @@
+<!DOCTYPE HTML PUBLIC '-//W3C//DTD HTML 4.01 Transitional//EN'>
+<html lang="en">
+<body>
+  
+    <div class="container">
+    <table class="table table-striped">
+            <tr>
+                    <th> Frequency </th>
+                    {%for ii in range(nchans)%}
+                    <th> {{ii+1}} most coherent </th>
+                    {% endfor %}
+            </tr>
+            {%for ii in range(nfreqs)%}
+            <tr>
+                    <td> {{freqs[ii]}}</td>
+                    {%for jj in range(nchans)%}
+                    <td bgcolor={{cohe_color(cut_coh_tab[ii,jj])}}>{{chanmatrix[ii][jj]}}: {{(cut_coh_tab[ii,jj] * 100000 // 1)  / 100000}}</td>
+                    {% endfor %}
+            </tr>
+            {% endfor %}
+    </table>
+    </div>
+</body>
+

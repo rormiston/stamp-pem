@@ -1,0 +1,84 @@
+#!/usr/bin/python
+from stamp_pem.coherence_segment import (PEMSubsystem, ChannelDict)
+from gwpy.segments import DataQualityFlag
+from gwpy.detector import Channel
+import os
+from stamp_pem import coh_io
+import optparse
+
+def parse_command_line():
+    """
+    parse_command_line
+    """
+    parser = optparse.OptionParser()
+    parser.add_option(
+        "--darm-channel", help="channel 1", default='L1:GDS-CALIB_STRAIN',
+        type=str, dest="channel1")
+    parser.add_option(
+        "--list", help="file containing channel list", default=None,
+        type=str)
+    parser.add_option(
+        "-s", "--start-time", dest='st', help="start time", type=int,
+        default=None)
+    parser.add_option(
+        "-e", "--end-time", dest='et', help="end time", type=int, default=None)
+    parser.add_option(
+        "--stride", dest='stride', help="stride for ffts",
+        type=float, default=1)
+    parser.add_option(
+        "--directory", "-d", help="plot directory", type=str, default="./", dest='dir')
+    parser.add_option(
+        "--subsystem", dest='subsystem', type=str, help='subsystem',
+        default=None)
+    parser.add_option(
+        "--flag", help="DQ flag",
+        dest="flag",type='str', default=None)
+    parser.add_option(
+        "--resamplerate1", help="resamplerate1", default=None,
+        type=float)
+    parser.add_option(
+        "--resamplerate2", help="resamplerate2", default=None,
+        type=float)
+    params, args = parser.parse_args()
+    return params
+
+#os.system('export X509_USER_CERT="/home/meyers/dailyWhistles_ldas-pcdev2.ligo-wa.caltech.edu-cert.pem"')
+#os.system('export X509_USER_KEY="/home/meyers/robot.key.pem"')
+params = parse_command_line()
+chandict = ChannelDict.read(params.list)
+ifo = params.channel1[0]
+darmchan = chandict['Calibrated h(t) 1'][0]
+#segs = DataQualityFlag.query_segdb(params.flag, params.st, params.et, url="https://segments.ligo.org")
+segdir = coh_io.get_directory_structure('SEGMENTS', params.st, directory=params.dir)
+segfile = coh_io.create_coherence_data_filename(params.flag, 'SEGMENTS', params.st, params.et,
+                                                directory=segdir)
+segs = DataQualityFlag.read(segfile, format='ligolw')
+First = 1
+if len(segs.active) > 0:
+    for seg in segs.active:
+        if First:
+            subsys = PEMSubsystem.coherence(darmchan, params.subsystem, chandict,
+                                    seg[0].gpsSeconds, seg[1].gpsSeconds, stride=params.stride,
+                                    resamplerate1=params.resamplerate1,
+                                    resamplerate2=params.resamplerate2)
+            First = 0
+        else:
+            subsys.update(PEMSubsystem.coherence(params.channel1, params.subsystem, chandict,
+                                            seg[0].gpsSeconds, seg[1].gpsSeconds, stride=params.stride,
+                                            resamplerate2=params.resamplerate2,
+                                            resamplerate1=params.resamplerate1))
+
+
+    coh_io.create_directory_structure(chandict.keys(), params.st, directory=params.dir)
+    cohdir = coh_io.get_directory_structure(params.subsystem, params.st, directory=params.dir)
+    cohfile = coh_io.create_coherence_data_filename(params.channel1, params.subsystem, params.st, params.et,
+                                                    directory=cohdir)
+#    segdir = coh_io.get_directory_structure('SEGMENTS', params.st, directory=params.dir)
+#    segfile = coh_io.create_coherence_data_filename(params.flag, 'SEGMENTS', params.st, params.et,
+#                                                    directory=segdir)
+#    segs.write(segfile, format='ligolw')
+    subsys.write(cohfile)
+
+else:
+    print 'No locked segments during this time'
+

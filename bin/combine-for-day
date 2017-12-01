@@ -1,0 +1,62 @@
+#!/usr/bin/python
+import os
+from stamp_pem import coh_io
+from stamp_pem.coherence_segment import ChannelDict
+from gwpy.time import tconvert
+from datetime import datetime
+import optparse
+
+"""
+This script is to be run to combine data
+for a single day. Often, things fail, and the
+webpage requires day-compiled plots. It's easy
+to re-run the dags to generate data that's missed,
+but the issue we often run into is that the compiled data
+and plots need to be regenerated and that's usually done
+in the `run-stamp-pem-pipeline` command, which would require
+editing the time file to make thigns work. This way, you 
+just give it a day and it'll combine everything for you from
+that day. The webpage should already be made and waiting
+for the output of this file!
+"""
+
+
+def parse_command_line():
+    """
+    parse command parse command line
+    """
+    parser = optparse.OptionParser()
+    parser.add_option(
+        "--ini-file", "-i", help="pipeline ini file",
+        default=None, type=str, dest='ini')
+    parser.add_option(
+        "--start-time", "-s", help="start time, any time in day\
+        you want to combine for", dest='st', type=int, default=None)
+    params, args = parser.parse_args()
+    return params
+
+# set up some params 
+params = parse_command_line()
+pipeline_dict = coh_io.read_pipeline_ini(params.ini)
+env_params, run_params = coh_io.check_ini_params(pipeline_dict)
+channel_dict = ChannelDict.read(env_params['list'])
+time_file = env_params['online_time_file']
+inc = int(env_params['online_increment'])
+jobdur = int(env_params['job_duration'])
+darm_channel = run_params['darm_channel']
+basedir = env_params['base_directory']
+flag = run_params['flag']
+if params.st is None:
+    st = coh_io.read_time_from_file(time_file)
+    et = st + inc
+else:
+    st = params.st
+
+# combine coherence for full day so far unless it's the first
+# time we're running today
+starttime = tconvert(st)
+daystart = tconvert(datetime(starttime.year, starttime.month, starttime.day))
+for key in channel_dict.keys():
+    combine_cmd = "combine_coherence --darm-channel %s -s %d -e %d --subsystem '%s' --directory %s --increment 86400 --jobdur %d" % (
+    darm_channel, daystart, daystart+86400, key, basedir, inc)
+    os.system(combine_cmd)

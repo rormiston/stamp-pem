@@ -1,0 +1,86 @@
+#!/home/meyers/opt/stamp_pem_soft/bin/python
+from stamp_pem.query_online import get_channel_online_data
+from gwpy import time
+import optparse
+import numpy as np
+import matplotlib.pyplot as plt
+plt.rc('text', usetex=True)
+
+def parse_command_line():
+    """
+    parse command parse command line
+    """
+    parser = optparse.OptionParser()
+    parser.add_option(
+        "-s", "--start-time", help="start time for combining",
+        default=None, type='str', dest='st')
+    parser.add_option(
+        "-e", "--end-time", help="end time for combining",
+        default=None, dest='et', type='str')
+    parser.add_option(
+        "-c", "--channel", help="channel",
+        default=None, type=str, dest="channel")
+    parser.add_option(
+        "-r","--remove-nonlocked-times",help="remove nonlocked times from spectrogram",
+        default=False, dest="rnt", action='store_true')
+    parser.add_option(
+        "-f","--format",dest="format",default="spectrogram", type=str)
+    parser.add_option(
+        "-n","--normalize-coherence", dest="norm", default=False, action='store_true')
+    parser.add_option(
+        "--flow",dest="flow", default=None, type=float)
+    parser.add_option(
+        "--fhigh",dest="fhigh",default=None, type=float)
+    parser.add_option(
+        "--vmin",dest="vmin", default=None, type=float)
+    parser.add_option(
+        "--vmax",dest="vmax", default=None, type=float)
+    parser.add_option(
+        "--cmap",dest="cmap", default="viridis", type=str)
+    parser.add_option("--config-file",
+            help="configuration file to find data", default=None,
+            dest="config_file", type=str)
+    params, args = parser.parse_args()
+    return params
+
+params = parse_command_line()
+stgps = int(time.to_gps(params.st))
+st = time.from_gps(stgps)
+etgps = int(time.to_gps(params.et))
+et = time.from_gps(etgps)
+
+# get data
+if params.config_file is None:
+    dat = get_channel_online_data(params.channel, stgps, etgps, format=params.format, normalize_coherence=params.norm, remove_nonlocked_times=params.rnt)
+else:
+    dat = get_channel_online_data(params.channel, stgps, etgps, format=params.format, normalize_coherence=params.norm, remove_nonlocked_times=params.rnt, config_file=params.config_file)
+# replace any nans with something large
+if params.vmin is None:
+    if params.norm:
+        params.vmin=1
+    else:
+        # may look confusing. I swear it's
+        # just figure out the next power of ten down
+        # from minimum value
+        params.vmin=1e-3
+if params.vmax is None:
+    if params.norm:
+        params.vmax=1e3
+    else:
+        params.vmax=1
+#if params.norm:
+plot = dat.plot(vmin=params.vmin, vmax=params.vmax, norm='log', cmap=params.cmap)
+#else:
+#    plot = dat.plot(vmin=params.vmin, vmax=params.vmax, cmap=params.cmap)
+
+ax = plot.gca()
+if params.norm:
+    plot.add_colorbar(label='coherence SNR')
+else:
+    plot.add_colorbar(label='coherence')
+if params.flow is not None and params.fhigh is not None:
+    ax.set_ylim(params.flow, params.fhigh)
+ax = plot.gca()
+ax.set_title(params.channel.replace('_','\_'))
+plot.suptitle('%s to %s' %  (st, et))
+plot.savefig('%s-SPECTROGRAM-%d-%d' % (params.channel.replace(':','-'), int(stgps), int(etgps)-int(stgps)))

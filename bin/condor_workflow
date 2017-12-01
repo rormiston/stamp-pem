@@ -1,0 +1,170 @@
+#!/usr/bin/python
+from stamp_pem import coh_io
+from stamp_pem.coherence_segment import ChannelDict
+from glue import pipeline
+import optparse
+from gwpy.segments import (DataQualityFlag, SegmentList, Segment)
+import os
+
+
+def parse_command_line():
+    """
+    parse command parse command line
+    """
+    parser = optparse.OptionParser()
+    parser.add_option(
+        "--ini-file", "-i", help="pipeline ini file",
+        default=None, type=str, dest='ini')
+    params, args = parser.parse_args()
+    return params
+
+
+def build_arg(env_params, run_params):
+    flags = {}
+    flags['-list'] = env_params['list']
+    flags['-flag'] = run_params['flag']
+    flags['s'] = '$(st)'
+    flags['e'] = '$(et)'
+    flags['-darm-channel'] = run_params['darm_channel']
+    flags['-stride'] = str(run_params['stride'])
+    flags['-subsystem'] = "'$(subsystem)'"
+    flags['d'] = str(env_params['base_directory'])
+    if run_params['resamplerate1']:
+        flags['-resamplerate1'] = str(run_params['resamplerate1'])
+    if run_params['resamplerate2']:
+        flags['-resamplerate2'] = str(run_params['resamplerate2'])
+    arg = ''
+    for flag in flags.keys():
+        arg = arg + ' -%s %s' % (flag, flags[flag])
+    return arg
+
+
+params = parse_command_line()
+
+pipeline_dict = coh_io.read_pipeline_ini(params.ini)
+env_params, run_params = coh_io.check_ini_params(pipeline_dict)
+channel_dict = ChannelDict.read(env_params['list'])
+time_file = env_params['online_time_file']
+inc = int(env_params['online_increment'])
+jobdur = int(env_params['job_duration'])
+if not inc % jobdur == 0:
+    raise ValueError('The job duration doesnt evenly divide into the online increment')
+totjobs = inc / jobdur
+segs = SegmentList()
+st = coh_io.read_time_from_file(time_file)
+et = st + inc
+for ii in range(totjobs):
+    segs.append(Segment([st + (ii*jobdur), st + ((ii+1)*jobdur)]))
+# create directory structure
+subsystems = channel_dict.keys()
+coh_io.create_directory_structure(subsystems, st, env_params['base_directory'])
+
+# get darm and DQ flag from params...we'll use them a lot.
+darm_channel = run_params['darm_channel']
+flag = run_params['flag']
+
+
+# make sure flag and darm are for same IFO. I've done this wrong
+# too many times to make the mistake again.
+if not coh_io.check_channel_and_flag(darm_channel, flag):
+    raise ValueError('channel and flag are not for same IFO!')
+
+datajob = pipeline.CondorDAGJob('vanilla', env_params['executable'])
+datajob2 = pipeline.CondorDAGJob(
+    'vanilla', env_params['combine_executable'])
+dag = pipeline.CondorDAG(
+    '/usr1/%s/$(subsystem).log' % (env_params['user']))
+coh_io.create_directory_structure(
+    channel_dict.keys(), st, directory=env_params['base_directory'])
+
+dag_dir = coh_io.get_directory_structure(
+    'DAGS', st, env_params['base_directory'])
+sub_node = {}
+for subsystem in channel_dict.keys():
+    sub_node[subsystem] = []
+    spl = subsystem.replace('(', ' ').replace(')', '').split()
+    subsys_shortkey = ''
+    for s in spl:
+        subsys_shortkey += s[0].upper()
+
+    for seg in segs:
+        seg_st = seg[0]
+        seg_et = seg[1]
+        job = pipeline.CondorDAGJob('vanilla', env_params['executable'])
+        job.set_sub_file('%s/%s-%d-%d.sub' % (
+                         dag_dir, darm_channel.replace(':', '-'),
+                         st, et))
+        job.set_stderr_file(
+            '%s/$(subsystemshortname).err' % (dag_dir))
+        job.set_stdout_file(
+            '%s/$(subsystemshortname).out' % (dag_dir))
+        node = pipeline.CondorDAGNode(job)
+        node.add_macro("subsystem", subsystem)
+        node.add_macro("st", seg_st)
+        node.add_macro("et", seg_et)
+        node.add_macro("subsystemshortname", subsys_shortkey)
+        sub_node[subsystem].append(node)
+        dag.add_node(node)
+for subsystem in channel_dict.keys():
+    spl = subsystem.replace('(', ' ').replace(')', '').split()
+    subsys_shortkey = ''
+    for s in spl:
+        subsys_shortkey += s[0].upper()
+
+    job = pipeline.CondorDAGJob(
+        'vanilla', env_params['combine_executable'])
+    job.set_sub_file('%s/combine_jobs-%d-%d.sub' % (dag_dir, st, et))
+    job.set_stderr_file(
+        '%s/$(subsystemshortname)-combine.err' % dag_dir)
+    job.set_stdout_file(
+        '%s/$(subsystemshortname)-combine.out' % dag_dir)
+    node = pipeline.CondorDAGNode(job)
+    node.add_macro('subsystem', subsystem)
+    node.add_macro('subsystemshortname', subsys_shortkey)
+    # add parents
+    [node.add_parent(sub_node[subsystem][ii]) for ii in range(len(sub_node[subsystem]))]
+    dag.add_node(node)
+
+dagName = '%s/%s-%d-%d' % (
+    dag_dir, darm_channel.replace(':', '-'), st, et)
+for seg in segs:
+    datajob = pipeline.CondorDAGJob('vanilla', env_params['executable'])
+    # datajob info
+    datajob_sub = '%s/%s-%d-%d.sub' % (
+                  dag_dir, darm_channel.replace(':', '-'), st, et)
+    datajob.set_sub_file(datajob_sub)
+    datajob.set_stderr_file(
+        '%s/$(subsystemshortname).err' % (dag_dir))
+    datajob.set_stdout_file(
+        '%s/$(subsystemshortname).out' % (dag_dir))
+    datajob.set_log_file(
+        '%s/$(subsystemshortname).log' % (dag_dir))
+
+
+datajob2_sub = '%s/combine_jobs-%d-%d.sub' % (dag_dir, st, et)
+
+# combine jobs post processing info
+datajob2.set_sub_file(datajob2_sub)
+datajob2.set_stderr_file(
+    '%s/$(subsystemshortname)-combine.err' % (dag_dir))
+datajob2.set_stdout_file(
+    '%s/$(subsystemshortname)-combine.out' % (dag_dir))
+datajob2.set_log_file(
+    '/usr1/%s/$(subsystemshortname)-combine.log' % env_params['user'])
+arg = build_arg(env_params, run_params)
+print 'ARG = %s' % arg
+datajob.add_arg(arg)
+datajob2.add_arg("-s %d -e %d --subsystem '$(subsystem)' --darm-channel %s --directory %s --increment %d --jobdur %d" % (
+                 st, et, darm_channel, env_params['base_directory'], inc, jobdur))
+datajob.add_condor_cmd('getEnv', 'True')
+datajob2.add_condor_cmd('getEnv', 'True')
+datajob.add_condor_cmd('accounting_group', env_params['accounting_tag'])
+datajob.add_condor_cmd('request_memory', 2500)
+datajob2.add_condor_cmd('request_memory', 2500)
+datajob2.add_condor_cmd('accounting_group', env_params['accounting_tag'])
+datajob.add_condor_cmd('accounting_group_user', env_params['accounting_user'])
+datajob2.add_condor_cmd('accounting_group_user', env_params['accounting_user'])
+datajob.write_sub_file()
+datajob2.write_sub_file()
+dag.set_dag_file(dagName)
+dag.write_dag()

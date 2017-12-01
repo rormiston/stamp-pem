@@ -1,0 +1,72 @@
+#!/usr/bin/python
+from gwpy.segments import (DataQualityFlag, Segment, SegmentList)
+from stamp_pem.coherence_segment import ChannelDict
+from gwpy.time import tconvert
+from datetime import datetime
+import os
+import optparse
+from stamp_pem import coh_io
+import sys
+from progressbar import (ProgressBar, Percentage, AnimatedMarker)
+import subprocess as sp
+
+
+def parse_command_line():
+    """
+    parse command parse command line
+    """
+    parser = optparse.OptionParser()
+    parser.add_option(
+        "--ini-file", "-i", help="pipeline ini file",
+        default=None, type=str, dest='ini')
+    params, args = parser.parse_args()
+    return params
+
+
+# set up some params
+params = parse_command_line()
+pipeline_dict = coh_io.read_pipeline_ini(params.ini)
+env_params, run_params = coh_io.check_ini_params(pipeline_dict)
+channel_dict = ChannelDict.read(env_params['list'])
+time_file = env_params['online_time_file']
+inc = int(env_params['online_increment'])
+jobdur = int(env_params['job_duration'])
+darm_channel = run_params['darm_channel']
+basedir = env_params['base_directory']
+flag = run_params['flag']
+st = coh_io.read_time_from_file(time_file)
+et = st + inc
+
+# combine coherence for full day so far unless it's the first
+# time we're running today
+starttime = tconvert(st)
+daystart = tconvert(datetime(starttime.year, starttime.month, starttime.day))
+
+N = 86400 / jobdur
+daystart = tconvert(datetime(starttime.year, starttime.month, starttime.day))
+
+proxyCheck = sp.Popen(['grid-proxy-info'], stdout=sp.PIPE).communicate()[0]
+if proxyCheck:
+    segs = DataQualityFlag.query(flag, st, et)
+    segs = segs.active
+else:
+    print('\nCannot query segment database without a valid proxy. Most likely,')
+    print('you need to run: ligo-proxy-init albert.einstein')
+    sys.exit()
+
+pbar = ProgressBar(widgets=['Working: ', AnimatedMarker(),
+                            ' ', Percentage()], maxval=len(range(N))).start()
+for ii in range(N):
+    st_seg = daystart + jobdur * ii
+    et_seg = daystart + jobdur * (ii + 1)
+    segs = DataQualityFlag.query_dqsegdb(run_params['flag'], st_seg, et_seg)
+    segdir = coh_io.get_directory_structure('SEGMENTS', st_seg,
+                                            env_params['base_directory'])
+    coh_io.create_directory_structure(channel_dict.keys(), st_seg,
+                                      directory=basedir)
+    segfile = coh_io.create_coherence_data_filename(flag, 'SEGMENTS', st_seg,
+                                                    et_seg, directory=segdir)
+    segs.write(segfile, format='ligolw')
+    pbar.update(ii + 1)
+
+pbar.finish()

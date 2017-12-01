@@ -1,0 +1,102 @@
+#!/usr/bin/python
+import os
+import sys
+from stamp_pem import coh_io
+from stamp_pem.coherence_segment import ChannelDict
+from gwpy.time import tconvert
+from datetime import datetime
+import optparse
+from stamp_pem.selectivequery import is_first_run
+from progressbar import (ProgressBar, Percentage, AnimatedMarker)
+from stamp_pem.statusreport import (GetEmailAddresses, CombineReports,
+                          SendReports, GetAttachments)
+
+
+def parse_command_line():
+    """
+    parse command parse command line
+    """
+    parser = optparse.OptionParser()
+    parser.add_option(
+        "--ini-file", "-i", help="pipeline ini file",
+        default=None, type=str, dest='ini')
+    params, args = parser.parse_args()
+    return params
+
+# set up some params
+params = parse_command_line()
+pipeline_dict = coh_io.read_pipeline_ini(params.ini)
+env_params, run_params = coh_io.check_ini_params(pipeline_dict)
+channel_dict = ChannelDict.read(env_params['list'])
+time_file = env_params['online_time_file']
+inc = int(env_params['online_increment'])
+jobdur = int(env_params['job_duration'])
+darm_channel = run_params['darm_channel']
+basedir = env_params['base_directory']
+flag = run_params['flag']
+st = coh_io.read_time_from_file(time_file)
+et = st + inc
+subsystems = 'all'
+is_first = is_first_run(basedir, time_file)
+
+# Set info for job report
+file1 = basedir + '/FailedJobs/FailedJobsReport_CC.txt'  # combine_coherence
+file2 = basedir + '/FailedJobs/FailedJobsReport_MOWP.txt'  # make_online_webpage
+sender = 'stamppem@gmail.com'
+password = None  # Contact rich.ormiston@ligo.org for password to enable automated reporting
+if password is not None:
+    try:
+        recipientfile = env_params['recipients']
+        recipients = GetEmailAddresses(recipientfile)
+        for recipient in recipients:
+            if '@' not in recipient:
+                raise NameError("Invalid recipient(s)")
+    except KeyError:
+        print('Need to supply a recipients file for automated reporting')
+
+# System commands to run scripts
+condor_cmd = 'condor_workflow -i %s' % params.ini
+dagdir = coh_io.get_directory_structure('DAGS', st,
+                                        env_params['base_directory'])
+dagName = '%s/%s-%d-%d' % (dagdir, darm_channel.replace(':', '-'), st, et)
+submit_cmd = 'condor_submit_dag %s.dag' % dagName
+starttime = tconvert(st)
+daystart = tconvert(datetime(starttime.year, starttime.month, starttime.day))
+condor_cmd = 'condor_workflow -i %s' % params.ini
+
+# If we're running for the first time, we need to change the run order
+if is_first is True:
+    # generate condor_workflow for next hours
+    os.system(condor_cmd)
+
+    # submit dag files
+    os.system(submit_cmd)
+
+elif is_first is False:
+    combine_cmd = ("selective-query-combine-coherence -i %s "
+                                "-st %d -et %d -o %s" % (params.ini, daystart,
+                                                         et, basedir))
+    webpage_cmd = ("selective-query-webpage -i %s -st %d -et %d -o %s" %
+                  (params.ini, daystart, et, basedir))
+    d3plot_cmd = ("selective-query-d3plots -i %s -st %d -et %d -o %s" %
+                 (params.ini, daystart, et, basedir))
+    residual_cmd = ("selective-query-residuals -i %s -st %d -et %d -o %s" %
+                   (params.ini, daystart, et, basedir))
+
+    proxyCheck = os.system(combine_cmd)
+    if proxyCheck != 0:
+        sys.exit(1)
+
+    os.system(webpage_cmd)
+    os.system(d3plot_cmd)
+    os.system(residual_cmd)
+
+    # generate condor_workflow for next hours
+    os.system(condor_cmd)
+
+    # submit dag files
+    os.system(submit_cmd)
+
+# increment time file
+coh_io.increment_datetime_in_file(env_params['online_time_file'], inc)
+

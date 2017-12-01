@@ -1,0 +1,27 @@
+          __
+   _____ / /_ ____ _ ____ ___   ____          ____   ___   ____ ___
+  / ___// __// __ `// __ `__ \ / __ \        / __ \ / _ \ / __ `__ \
+ (__  )/ /_ / /_/ // / / / / // /_/ /       / /_/ //  __// / / / / /
+/____/ \__/ \__,_//_/ /_/ /_// .___/______ / .___/ \___//_/ /_/ /_/
+                            /_/    /_____//_/
+
+usage: selective-query [-h] [--ini-file INI] [-st ST] [-et ET]
+                       [-f FREQUENCY_BAND [FREQUENCY_BAND ...]]
+                       [--subsystems SUBSYSTEMS [SUBSYSTEMS ...]]
+                       [--new-df NEW_DF] [--output OUTPUT_DIR]
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --ini-file INI, -i INI
+                        pipeline ini file
+  -st ST, --start-time ST
+                        query start time
+  -et ET, --end-time ET
+                        query end time
+  -f FREQUENCY_BAND [FREQUENCY_BAND ...], --frequency_band FREQUENCY_BAND [FREQUENCY_BAND ...]
+                        Define frequency band to query
+  --subsystems SUBSYSTEMS [SUBSYSTEMS ...]
+                        subsystem
+  --new-df NEW_DF       coarse graining frequency bin width
+  --output OUTPUT_DIR, -o OUTPUT_DIR
+                        output directory

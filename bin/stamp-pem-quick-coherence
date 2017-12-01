@@ -1,0 +1,205 @@
+#!/usr/bin/python
+from stamp_pem.coherence_segment import (PEMSubsystem, ChannelDict)
+import fnmatch
+from gwpy.segments import DataQualityFlag, Segment, SegmentList
+import numpy as np
+from gwpy.detector import Channel
+import os
+from stamp_pem import coh_io
+import optparse
+from jinja2 import Environment, PackageLoader
+from stamp_pem.utils import cohe_color, get_excluded
+
+env = Environment(loader=PackageLoader('stamp_pem', 'templates'))
+
+env.globals['cohe_color'] = cohe_color
+
+excluded = get_excluded()
+
+def parse_command_line():
+    """
+    parse_command_line
+    """
+    parser = optparse.OptionParser()
+    parser.add_option(
+        "--darm-channel", help="channel 1", default=None,
+        type=str, dest="channel1")
+    parser.add_option(
+        "--list", help="file containing channel list", default=None,
+        type=str)
+    parser.add_option(
+        "-s", "--start-time", dest='st', help="start time", type=int,
+        default=None)
+    parser.add_option(
+        "-e", "--end-time", dest='et', help="end time", type=int, default=None)
+    parser.add_option(
+        "--stride", dest='stride', help="stride for ffts",
+        type=float, default=1)
+    parser.add_option(
+        "--subsystems", dest='subsystems', type=str, help='comma separated lsit of subsystems to run over',
+        default=None)
+    parser.add_option(
+        "--flag", help="DQ flag",
+        dest="flag",type='str', default=None)
+    parser.add_option(
+        "--resamplerate1", help="resamplerate1", default=8192,
+        type=float)
+    parser.add_option(
+        "--resamplerate2", help="resamplerate2", default=8192,
+        type=float)
+    parser.add_option(
+        "-o", "--output-directory", help="output directory",
+        default=None, dest="odir")
+    parser.add_option(
+        "--new-df",help="frequency to coarsegrain to for bruco-like table",
+        default=1, dest="new_df")
+    parser.add_option(
+        "--no-segdb", action='store_false', dest='do_lock', default=True)
+    parser.add_option(
+        "--do-plots", action='store_true', dest='do_plots', default=False)
+    params, args = parser.parse_args()
+    return params
+
+params = parse_command_line()
+chandict = ChannelDict.read(params.list)
+if params.channel1 is None:
+    params.channel1 = chandict['Calibrated h(t) 1'][0].name
+ifo = params.channel1[:2]
+
+if params.flag is None:
+    params.flag = '%s:DMT-ANALYSIS_READY' % ifo
+darmchan = chandict['Calibrated h(t) 1'][0]
+# decide if we want to use locked time
+if params.do_lock:
+    segs = DataQualityFlag.query_segdb(params.flag, params.st, params.et, url="https://segments.ligo.org")
+else:
+    segs = SegmentList()
+    segs.append([params.st, params.et])
+#segdir = coh_io.get_directory_structure('SEGMENTS', params.st, directory=params.dir)
+#segfile = coh_io.create_coherence_data_filename(params.flag, 'SEGMENTS', params.st, params.et,
+#                                                directory=segdir)
+#segs = DataQualityFlag.read(segfile, format='ligolw')
+nchans = 0
+if params.subsystems is None:
+    subsystems = [key for key in chandict.keys()]
+else:
+    subsystems = [ss.replace('_',' ') for ss in params.subsystems.split(',')]
+
+nchans = np.sum(np.asarray([len(chandict[key]) for key in subsystems]))
+
+plots = {}
+
+if len(segs.active) > 0:
+    for subsystem in subsystems:
+        plots[subsystem] = {}
+        First = 1
+        print 'Running coherence on subsystem: %s...' % subsystem
+        for seg in segs.active:
+            if First:
+                subsys = PEMSubsystem.coherence(darmchan, subsystem, chandict,
+                                        int(seg[0]), int(seg[1]), stride=params.stride,
+                                        resamplerate1=params.resamplerate1,
+                                        resamplerate2=params.resamplerate2)
+                First = 0
+            else:
+                subsys.update(PEMSubsystem.coherence(darmchan, subsystem, chandict,
+                                                int(seg[0]), int(seg[1]), stride=params.stride,
+                                                resamplerate2=params.resamplerate2,
+                                                resamplerate1=params.resamplerate1))
+
+
+        cohdir = params.odir
+        cohfile = coh_io.create_coherence_data_filename(params.channel1, subsystem, params.st, params.et,
+                                                        directory=cohdir)
+        segdir = params.odir
+        segfile = coh_io.create_coherence_data_filename(params.flag, 'SEGMENTS', params.st, params.et,
+                                                        directory=segdir)
+
+        segs.write(segfile, format='ligolw')
+        subsys.write(cohfile)
+        if params.do_plots:
+            plot = subsys.plot()
+            plot.savefig(cohfile)
+        plots[subsystem] = cohfile.split('/')[-1] + '.png'
+
+    # set up plots for subsystem pages
+    subsystems_short = []
+    for key in subsystems:
+        subsystems_short.append(key[:-2])
+    subsystems_short = np.unique(subsystems_short)
+    subplots = {}
+    for subsystem in subsystems_short:
+        subplots[subsystem] = []
+        for key in plots.keys():
+            if key[:-2] == subsystem:
+                subplots[subsystem].append(plots[key])
+    template = env.get_template('subsys2_quick.html')
+    for subsystem in subsystems_short:
+        f1 = open('%s/%s.html' % (params.odir, subsystem),'w')
+        print >>f1, template.render(subsystems=subsystems_short, thissubsystem=subsystem, plots=subplots[subsystem])
+        f1.close()
+
+    First = True
+    chans = []
+    print 'Done with coherence calculations...creating coherence table for sorting...'
+    count = 0
+    nexcluded = 0
+    for ii, key in enumerate(subsystems):
+        cohfile = coh_io.create_coherence_data_filename(params.channel1, key, params.st, params.et, directory=params.odir)
+        try:
+            try:
+                subsys = PEMSubsystem.read(key, cohfile)
+            except KeyError:
+                continue
+        except IOError:
+            continue
+    
+        subsys.coarse_grain(deltaFy=params.new_df)
+    
+        for jj,key2 in enumerate(subsys.keys()):
+            cont = False
+            if First:
+                coh_tab = np.zeros((nchans, subsys[key2].psd1.size))
+                freqs = subsys[key2].psd1.frequencies.value
+                First = False
+            nfreqs_chan = subsys[key2].psd2.size
+            for ex in excluded:
+                if fnmatch.fnmatch(key2,ifo + ':' + ex):
+                    coh_tab[count,:nfreqs_chan] = np.zeros(nfreqs_chan)
+                    nexcluded += 1
+                    count += 1
+                    cont=True
+                    chans.append(key2)
+                    break
+            if cont:
+                continue
+            else:
+                coh_tab[count,:nfreqs_chan] = subsys[key2].get_coh()
+                chans.append(key2)
+                count += 1
+    print 'Done creating coherence table...sorting it now...'
+
+
+    chans_to_keep = min(20, nchans - nexcluded)
+    # only keep top 20 channels
+    chanmatrix = []
+    cut_coh_tab = np.zeros((freqs.size, chans_to_keep))
+    arg1 = []
+    for ii in range(freqs.size):
+        args = np.asarray(np.argsort(coh_tab[:,ii]))[::-1]
+        argchans = [chans[kk] for kk in args[:chans_to_keep]]
+        chanmatrix.append([chan for chan in argchans])
+        cut_coh_tab[ii,:] = coh_tab[args[:chans_to_keep],ii]
+
+    template = env.get_template('bruco_table_template.html')
+    f2 = open('%s/bruco_table.html' % params.odir,'w')
+    print >> f2,template.render(subsystems=subsystems_short, chanmatrix=chanmatrix, cut_coh_tab=cut_coh_tab, nfreqs=freqs.size, nchans=chans_to_keep, freqs=freqs)
+    f2.close()
+    template = env.get_template('top_page_quick.html')
+    g3 = open('%s/index.html' % params.odir,'w')
+    print >> g3, template.render(subsystems=subsystems_short, segments=segs.active,flag=params.flag) 
+    g3.close()
+
+else:
+    print 'No locked segments during this time'
+

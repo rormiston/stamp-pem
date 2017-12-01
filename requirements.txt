@@ -1,0 +1,12 @@
+astropy==1.1.2
+http://software.ligo.org/lscsoft/source/glue-1.53.0.tar.gz
+gwpy==0.1
+numpy==1.11.0
+pykerberos==1.1.13
+python-dateutil==2.5.3
+scipy==0.17.1
+progressbar==2.3
+jinja2==2.9.5
+sphinx
+sphinx_rtd_theme
+numpydoc

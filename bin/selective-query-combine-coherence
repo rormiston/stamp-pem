@@ -1,0 +1,58 @@
+#!/usr/bin/python
+import sys
+from stamp_pem import coh_io
+from progressbar import (ProgressBar, Percentage, AnimatedMarker)
+import stamp_pem.selectivequery as sq
+
+# Collect parameters
+params = sq.parse_command_line()
+configs = sq.parse_cmd_and_configs(params)
+st, et = configs['st'], configs['et']
+basedir, output_dir = configs['basedir'], configs['output_dir']
+flag, jobdur = configs['flag'], configs['jobdur']
+darm_channel = configs['darm_channel']
+subsystem_list = configs['subsystem_list']
+flow, fhigh = configs['flow'], configs['fhigh']
+plotSNR = configs['plotSNR']
+
+# Get active segments and adjust start time
+adj_time = sq.adjusted_window(st, et, jobdur)
+pout = sq.print_segs(flag, st, et, jobdur)
+if pout is not None:
+    sys.exit(1)
+
+# Loop over subsystems
+sub_list = []
+for subsystem in subsystem_list:
+    print('Calculating coherence for {0}...'.format(subsystem))
+    sub = sq.read_segs(subsystem, adj_time, basedir, output_dir,
+                       jobdur, darm_channel, subsys=None)
+    sub_list.append(sub)
+
+# Write the data for each subsystem
+# It can take a while, so add a progress bar
+pbar = ProgressBar(widgets=['Writing data and saving plots: ',
+                            AnimatedMarker(),' ',
+                            Percentage()], maxval=len(sub_list)).start()
+
+sq.create_folder_structure(subsystem_list, adj_time[0],
+                           directory=output_dir)
+for subsys in sub_list:
+    pos = sub_list.index(subsys)
+    pbar.update(pos + 1)
+    if subsys is not None:
+        subsystem = subsystem_list[pos]
+        cohdir = coh_io.get_directory_structure(subsystem, adj_time[0],
+                                                directory=output_dir)
+        cohfile = coh_io.create_coherence_data_filename(darm_channel, subsystem,
+                                                        adj_time[0],
+                                                        adj_time[-1],
+                                                        directory=cohdir)
+        subsys.write(cohfile)
+        try:
+            plot = subsys.bandplot(flow, fhigh, plotSNR=plotSNR)
+        except:
+            plot = subsys.plot(plotSNR=plotSNR)
+        plot.savefig(cohfile)
+
+pbar.finish()

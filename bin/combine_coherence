@@ -1,0 +1,80 @@
+#!/usr/bin/python
+import h5py
+import optparse
+from stamp_pem import coh_io
+from stamp_pem.coherence_segment import PEMSubsystem
+from gwpy.segments import (DataQualityFlag, Segment, SegmentList)
+import numpy as np
+import os
+
+
+def parse_command_line():
+    """
+    parse_command_line
+    """
+    parser = optparse.OptionParser()
+    parser.add_option(
+        "--darm-channel", help="channel 1", default='L1:GDS-CALIB_STRAIN',
+        type=str, dest="channel1")
+    parser.add_option(
+        "-s", "--start-time", dest='st', help="start time", type=int,
+        default=None)
+    parser.add_option(
+        "-e", "--end-time", dest='et', help="end time", type=int, default=None)
+    parser.add_option(
+        "--subsystem", dest='subsystem', type=str, help='subsystem',
+        default=None)
+    parser.add_option(
+        "--directory", dest="dir", type=str, help="base directory")
+    parser.add_option(
+        "--increment", dest="inc", type=int,
+        help="time increment for each pipeline run")
+    parser.add_option(
+        "--jobdur", dest="jobdur", type=int, help="individual job durations")
+    params, args = parser.parse_args()
+    return params
+params = parse_command_line()
+
+segs = SegmentList()
+totjobs = params.inc / params.jobdur
+for ii in range(totjobs):
+    segs.append(Segment([params.st + (ii*params.jobdur), params.st + ((ii+1)*params.jobdur)]))
+
+path = str(params.dir) + '/FailedJobs/'
+if not os.path.exists(path):
+    os.system('mkdir -p {0}'.format(path))
+f = open(str(params.dir) + '/FailedJobs/FailedJobsReport_CC.txt', 'a')
+First = 1
+subsys=None
+for seg in segs:
+    seg_st = seg[0]
+    seg_et = seg[1]
+    cohdir = coh_io.get_directory_structure(params.subsystem, seg_st, directory = params.dir)
+    cohfile = coh_io.create_coherence_data_filename(params.channel1, params.subsystem, seg_st,
+                                                    seg_et, directory=cohdir)
+    if First:
+        try:
+            subsys = PEMSubsystem.read(params.subsystem, cohfile)
+            First = 0
+        except IOError:
+            error = "IOError: Couldn't load %s\n" % cohfile
+            f.write(error)
+            continue
+    else:
+        try:
+            temp = PEMSubsystem.read(params.subsystem, cohfile)
+        except IOError:
+            error = "IOError: Couldn't load %s\n" % cohfile
+            f.write(error)
+            continue
+        subsys.update(temp)
+
+f.write('\n')
+f.close()
+cohdir = coh_io.get_directory_structure(params.subsystem, params.st, directory = params.dir)
+cohfile = coh_io.create_coherence_data_filename(params.channel1, params.subsystem, params.st,
+                                                params.et, directory=cohdir)
+if subsys is not None:
+    subsys.write(cohfile)
+    plot = subsys.plot()
+    plot.savefig(cohfile)
